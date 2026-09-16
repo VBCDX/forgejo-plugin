@@ -1,0 +1,20 @@
+# Keep the image lean and free of anything that isn't runtime code. node_modules
+# is rebuilt inside the image via `npm ci`; tests, examples, git history, CI and
+# Docker scaffolding never belong in a layer.
+node_modules
+.git
+.gitignore
+test
+examples
+coverage
+.vitest
+.forgejo
+Dockerfile
+.dockerignore
+.env
+.env.example
+*.tgz
+*.log
+.DS_Store
+README.md
+cordis.patch.yml

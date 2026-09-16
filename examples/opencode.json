@@ -1,0 +1,14 @@
+{
+  "$comment": "Merge this entry into the 'mcp' section of your OpenCode user config or the project's opencode.json. Replace the absolute path with this package's installed bin/vbcdx-forgejo.js. No credentials belong in this file.",
+  "mcp": {
+    "forgejo": {
+      "type": "local",
+      "command": ["node", "/absolute/path/to/node_modules/@vbcdx/forgejo-plugin/bin/vbcdx-forgejo.js", "mcp"],
+      "enabled": true,
+      "environment": {
+        "VBCDX_FORGEJO_URL": "https://git.example.com",
+        "VBCDX_FORGEJO_WRITES": "off"
+      }
+    }
+  }
+}

@@ -1,0 +1,95 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # Daemon-free protection for the Dockerfile (issue #11). The self-hosted runner
+  # has no Docker daemon, so we cannot `docker build`; Hadolint is a single static
+  # binary that lints the Dockerfile itself — catching bad COPY paths, a dropped
+  # USER, unpinned bases, and best-practice regressions without a daemon.
+  hadolint:
+    runs-on: self-hosted
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Pinned version, checksum-verified. Not a Docker-based action (no daemon)
+      # and never "latest" — the binary is fetched from the tagged release and its
+      # SHA256 is checked before it is allowed to run.
+      - name: Install Hadolint (pinned, checksum-verified)
+        run: |
+          set -euo pipefail
+          HADOLINT_VERSION=2.12.0
+          HADOLINT_SHA256=56de6d5e5ec427e17b74fa48d51271c7fc0d61244bf5c90e828aab8362d55010
+          curl -fsSL -o /tmp/hadolint \
+            "https://github.com/hadolint/hadolint/releases/download/v${HADOLINT_VERSION}/hadolint-Linux-x86_64"
+          echo "${HADOLINT_SHA256}  /tmp/hadolint" | sha256sum -c -
+          chmod +x /tmp/hadolint
+          /tmp/hadolint --version
+
+      # No blanket ignores and no --no-fail: a real finding fails the job. Any
+      # rule that must be suppressed is suppressed inline in the Dockerfile with a
+      # one-line reason.
+      - name: Lint Dockerfile
+        run: /tmp/hadolint Dockerfile
+
+  test:
+    runs-on: self-hosted
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22', '24']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Show toolchain
+        run: node --version && npm --version
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Unit and fake-host tests
+        run: npm test
+
+      - name: Pack, install into a clean prefix, and run the artifact
+        run: |
+          set -euo pipefail
+          npm pack
+          TARBALL="$(ls vbcdx-forgejo-plugin-*.tgz)"
+          WORK="$(mktemp -d)"
+          cp "$TARBALL" "$WORK/"
+          cd "$WORK"
+          npm init -y >/dev/null 2>&1
+          npm install "./$TARBALL"
+          BIN="$WORK/node_modules/.bin/vbcdx-forgejo"
+          echo "--- --version ---"
+          node "$BIN" --version
+          echo "--- --help (head) ---"
+          node "$BIN" --help | head -n 3
+          echo "--- manifest is valid JSON with 33 tools ---"
+          node "$BIN" manifest > manifest.json
+          node -e "const m=require('./manifest.json'); if(m.schema_version!==1) throw new Error('schema_version'); if(m.service!=='forgejo') throw new Error('service'); if(m.contract!=='vbcdx.forgejo/1') throw new Error('contract'); if(m.tools.length!==33) throw new Error('expected 33 tools, got '+m.tools.length); console.log('manifest OK:', m.tools.length, 'tools');"
+          echo "--- serve boots, answers /healthz and MCP initialize, then healthcheck ---"
+          export VBCDX_FORGEJO_URL=https://git.example.com
+          export VBCDX_FORGEJO_HTTP_HOST=127.0.0.1
+          export VBCDX_FORGEJO_HTTP_PORT=18080
+          node "$BIN" serve &
+          SERVE_PID=$!
+          trap 'kill "$SERVE_PID" 2>/dev/null || true' EXIT
+          for i in $(seq 1 40); do curl -fsS "http://127.0.0.1:18080/healthz" >/dev/null 2>&1 && break || sleep 0.5; done
+          curl -fsS "http://127.0.0.1:18080/healthz" | grep -q '"tools":33'
+          curl -fsS -X POST "http://127.0.0.1:18080/mcp" \
+            -H 'Content-Type: application/json' \
+            -H 'Accept: application/json, text/event-stream' \
+            -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}' | grep -q forgejo
+          node "$BIN" healthcheck
+          echo "serve OK: /healthz 200, MCP initialize answered, healthcheck exit 0"

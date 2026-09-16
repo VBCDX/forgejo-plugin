@@ -1,0 +1,24 @@
+# DSH bundle patch (spec §2). Inserts one @deepseek-ai/dsh-mcp-client row that
+# launches this package's `mcp` command over stdio. The operator must set the
+# absolute VBCDX_FORGEJO_ENTRYPOINT to this package's installed
+# bin/vbcdx-forgejo.js before booting the selected DSH profile; an empty or
+# missing path is a failed registration, never a silent success. URL/write
+# settings default so the server can start without service configuration, but a
+# missing executable cannot be repaired by the server and is reported from host
+# diagnostics.
+- insert:
+    - id: mcp-forgejo
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: forgejo
+        transport: stdio
+        command: !!js "process.execPath"
+        args:
+          - !!js "(() => { const p = process.env.VBCDX_FORGEJO_ENTRYPOINT; if (!p || !process.getBuiltinModule('node:path').isAbsolute(p)) throw new Error('Set VBCDX_FORGEJO_ENTRYPOINT to the absolute installed entrypoint'); return p; })()"
+          - mcp
+        env:
+          VBCDX_FORGEJO_URL: !!js "(process.env.VBCDX_FORGEJO_URL || '')"
+          VBCDX_FORGEJO_WRITES: !!js "(process.env.VBCDX_FORGEJO_WRITES || 'off')"
+          VBCDX_FORGEJO_TIMEOUT_MS: !!js "(process.env.VBCDX_FORGEJO_TIMEOUT_MS || '30000')"
+        toolCallTimeoutMs: 35000
+        failOnStartupError: false
