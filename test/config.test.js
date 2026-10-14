@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { loadConfig, normalizeUrl } from '../src/config.js';
+import { loadConfig, normalizeUrl, withoutUnexpanded } from '../src/config.js';
 
 describe('normalizeUrl', () => {
   it('appends /api/v1 exactly once and normalizes trailing slashes', () => {
@@ -48,5 +48,38 @@ describe('loadConfig', () => {
     const c = loadConfig({ VBCDX_FORGEJO_URL: 'https://user:supersecret@git.example.com' });
     expect(c.urlError).toBeTruthy();
     expect(c.urlError).not.toContain('supersecret');
+  });
+});
+
+// Hermes passes an unset `${VAR}` reference through as literal text.
+describe('an unexpanded ${VAR} counts as unset', () => {
+  const URL_OK = { VBCDX_FORGEJO_URL: 'https://git.example.com' };
+
+  it('an optional timeout takes its default instead of failing every call', () => {
+    const c = loadConfig({ ...URL_OK, VBCDX_FORGEJO_TIMEOUT_MS: '${VBCDX_FORGEJO_TIMEOUT_MS}' });
+    expect(c.timeoutError).toBeNull();
+    expect(c.timeoutMs).toBe(30000);
+  });
+
+  it('the write gate stays off without reporting an invalid mode', () => {
+    const c = loadConfig({ ...URL_OK, VBCDX_FORGEJO_WRITES: '${VBCDX_FORGEJO_WRITES}' });
+    expect(c.writes).toBe('off');
+    expect(c.writesInvalid).toBeNull();
+  });
+
+  it('the URL reads as not set', () => {
+    expect(loadConfig({ VBCDX_FORGEJO_URL: ' ${VBCDX_FORGEJO_URL} ' }).urlError).toMatch(/is not set/);
+  });
+
+  it('only a whole-value reference is dropped; anything else is still checked', () => {
+    expect(loadConfig({ ...URL_OK, VBCDX_FORGEJO_TIMEOUT_MS: '${X}0' }).timeoutError).toBeTruthy();
+    expect(loadConfig({ ...URL_OK, VBCDX_FORGEJO_TIMEOUT_MS: '$X' }).timeoutError).toBeTruthy();
+    expect(loadConfig({ ...URL_OK, VBCDX_FORGEJO_WRITES: '${1X}' }).writesInvalid).toBe('${1X}');
+  });
+
+  it('withoutUnexpanded touches only VBCDX_FORGEJO_* references', () => {
+    const env = { VBCDX_FORGEJO_WRITES: '${A}', VBCDX_FORGEJO_URL: 'https://x.example', OTHER: '${B}' };
+    expect(withoutUnexpanded(env)).toEqual({ VBCDX_FORGEJO_URL: 'https://x.example', OTHER: '${B}' });
+    expect(env.VBCDX_FORGEJO_WRITES).toBe('${A}'); // the caller's object is not changed
   });
 });

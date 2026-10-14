@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport, getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { fakeHost, makeCredFile } from './helpers.js';
+import { serializeManifest } from '../src/index.js';
 
 const BIN = fileURLToPath(new URL('../bin/vbcdx-forgejo.js', import.meta.url));
 
@@ -33,10 +34,10 @@ async function connect(env) {
 }
 
 describe('MCP server over stdio', () => {
-  it('lists 33 tools with schemas and effect annotations, even without configuration', async () => {
+  it('lists 35 tools with schemas and effect annotations, even without configuration', async () => {
     client = await connect({}); // no VBCDX_FORGEJO_URL
     const { tools } = await client.listTools();
-    expect(tools).toHaveLength(33);
+    expect(tools).toHaveLength(35);
     const whoami = tools.find((t) => t.name === 'whoami');
     expect(whoami.inputSchema).toBeTruthy();
     expect(whoami.outputSchema).toBeTruthy();
@@ -85,7 +86,15 @@ describe('CLI exit-code contract', () => {
     const r = run(['manifest']);
     expect(r.status).toBe(0);
     const m = JSON.parse(r.stdout);
-    expect(m.tools).toHaveLength(33);
+    expect(m.tools).toHaveLength(35);
+  });
+
+  it('manifest survives a pipe intact (no truncation at 64 KiB)', () => {
+    // A real shell pipe: the reader is another process, so stdout is asynchronous.
+    const r = spawnSync('sh', ['-c', `"${process.execPath}" "${BIN}" manifest | cat`], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+    expect(r.status).toBe(0);
+    expect(r.stdout.length).toBeGreaterThan(65536);
+    expect(r.stdout).toBe(`${serializeManifest()}\n`);
   });
 
   it('an unknown command exits 2', () => {

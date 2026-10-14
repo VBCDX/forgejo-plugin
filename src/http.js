@@ -1,4 +1,4 @@
-// The HTTP layer and per-call context (spec §3).
+// The HTTP layer and per-call context (contract §3).
 //
 // One deadline covers credential loading, an optional preflight, the primary
 // request, pagination and verification — so the deadline lives on a call

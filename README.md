@@ -1,291 +1,178 @@
 # @vbcdx/forgejo-plugin
 
-An MCP server that exposes a **finite, verified Forgejo tool catalog** — contract
-`vbcdx.forgejo/1`. It is a thin, auditable bridge: 33 tools covering users,
-repositories, issues, comments, labels/milestones, pull requests, reviews,
-commit statuses and Actions runs. It installs no agents and provisions no
-credentials or Forgejo accounts.
+An [MCP](https://modelcontextprotocol.io) server for [Forgejo](https://forgejo.org). It gives AI
+agents a fixed set of 35 tools for repositories, issues, comments, labels, milestones, pull
+requests, reviews, commit statuses and Actions runs, with a write gate and verified results.
 
-> The **authoritative specification** is the contract `vbcdx.forgejo/1`; where
-> anything here disagrees with it, the spec wins. This file covers what the
-> package needs to be installed and run.
+- Runs over **stdio** (for a local agent harness) or **Streamable HTTP** (as a network service or
+  container).
+- **Write gate:** reads only by default. Writes and destructive operations need explicit opt-in.
+- **Verified results:** writes are read back to confirm them, and a timed-out or ambiguous write
+  is reported as such rather than as success or failure. `dispatch_workflow` and
+  `cancel_workflow_run` are acknowledged only (outcome `accepted`); the run itself is not awaited.
 
-## Install & run
+The full specification is in [docs/contract.md](docs/contract.md).
 
-Requires Node.js ≥ 22. The package ships runnable JavaScript with no build step.
+## Requirements
 
-> **Not published yet.** This package is not on any public npm registry, so
-> `npm install @vbcdx/forgejo-plugin` does not resolve today. The commands below
-> are the intended install and invocation path once `0.1.0` is published and
-> tested. To run it before then, use the [contributor commands](#running-from-a-checkout).
+- Node.js 22 or later
+- A Forgejo instance and an access token (or username and password) for it
 
-Once published, install the package and invoke the `vbcdx-forgejo` binary:
+## Install
 
 ```sh
-npm install @vbcdx/forgejo-plugin
-
-npx vbcdx-forgejo --version
-npx vbcdx-forgejo --help
-npx vbcdx-forgejo manifest      # deterministic JSON tool manifest
-npx vbcdx-forgejo mcp           # stdio MCP server (default; credential files)
-npx vbcdx-forgejo serve         # network MCP server (Streamable HTTP; header credentials)
+npm install -g @vbcdx/forgejo-plugin
 ```
 
-The default, `mcp`, is the stdio server used by DSH and standalone installs. The
-`serve` command is the network/container mode — see
-[Network mode](#network-mode-serve-mcp-over-streamable-http).
+This installs the `vbcdx-forgejo` command. To run it without installing:
 
-`npx vbcdx-forgejo` runs the package's installed binary; the same entrypoint is
-on your `PATH` as `vbcdx-forgejo` after a global install. Unknown commands or
-options exit `2`. Only protocol frames go to stdout in `mcp`; diagnostics go to
-stderr, redacted.
+```sh
+npx -y --package=@vbcdx/forgejo-plugin vbcdx-forgejo --help
+```
+
+## Usage
+
+```text
+vbcdx-forgejo mcp          Start the stdio MCP server (default)
+vbcdx-forgejo serve        Start the network MCP server (Streamable HTTP)
+vbcdx-forgejo healthcheck  Probe a running serve endpoint; exit 0 if healthy
+vbcdx-forgejo manifest     Print the JSON tool manifest
+vbcdx-forgejo --help
+vbcdx-forgejo --version
+```
+
+### Register with an MCP client
+
+Claude Code:
+
+```sh
+claude mcp add forgejo --scope user \
+  -e VBCDX_FORGEJO_URL=https://git.example.com \
+  -e VBCDX_FORGEJO_WRITES=off \
+  -- vbcdx-forgejo mcp
+```
+
+Codex:
+
+```sh
+codex mcp add forgejo \
+  --env VBCDX_FORGEJO_URL=https://git.example.com \
+  --env VBCDX_FORGEJO_WRITES=off \
+  -- vbcdx-forgejo mcp
+```
+
+For OpenCode, see [examples/opencode.json](examples/opencode.json). More detail is in
+[examples/registration.md](examples/registration.md).
+
+The package also ships a [`vbcdx.json`](vbcdx.json) declaration, so the
+[vbcdx installer](https://github.com/VBCDX/vbcdx) can register it for you:
+
+```sh
+npm install -g @vbcdx/vbcdx
+vbcdx install tool @vbcdx/forgejo-plugin --harness=claude
+```
 
 ## Configuration
 
-Three environment settings, read once at startup (see `.env.example`):
+Settings are read from the environment once, at startup. See [.env.example](.env.example).
 
-| Setting | Meaning |
-| --- | --- |
-| `VBCDX_FORGEJO_URL` | Instance origin, optional subpath, optional trailing `/api/v1`. Required for a call. |
-| `VBCDX_FORGEJO_WRITES` | `off` (default) / `write` / `full`. Destructive tools require `full`. |
-| `VBCDX_FORGEJO_TIMEOUT_MS` | Total per-call deadline (default 30000, range 1000–120000). |
+| Variable | Default | Description |
+| --- | --- | --- |
+| `VBCDX_FORGEJO_URL` | none | Forgejo instance URL, optionally ending in `/api/v1`. Required for any call. |
+| `VBCDX_FORGEJO_WRITES` | `off` | `off` (reads only), `write` (ordinary writes), or `full` (also destructive tools). |
+| `VBCDX_FORGEJO_TIMEOUT_MS` | `30000` | Total deadline per tool call, 1000 to 120000 ms. |
 
-Tools are always discoverable. A call made without valid configuration or
-credentials returns an actionable, redacted error rather than failing to list.
+Tools are always listed. A call made without valid configuration or credentials returns an error
+explaining what is missing.
 
-## Credentials
+### Credentials (stdio mode)
 
-Every tool takes an absolute `credential_file` path — credentials are never CLI
-arguments and are never cached between calls. The file is a literal
-configuration file (no shell sourcing) with `VBCDX_AGENTS_ROLE`,
-`VBCDX_AGENTS_USER` and at least one of `VBCDX_AGENTS_TOKEN` /
-`VBCDX_AGENTS_PASSWORD`. It must be a regular, non-symlink file you own, mode
-`0600`, inside a private `0700` directory. See `examples/credential-file.env`.
-
-Authentication uses the token first; a Basic USER/PASSWORD retry happens only
-once, and only after an explicit `401` on the token request — never on `403`.
-
-## Deployment shapes
-
-The same 33-tool catalogue runs three ways. Pick the one that fits; nothing about
-the tools, the write gate, or the result envelope changes between them.
-
-1. **DSH** — registered as a plugin and invoked through the DSH harness (stdio).
-2. **Standalone** — installed with `npm install` / `npx` on any box and run as the
-   `vbcdx-forgejo` binary (stdio; see above).
-3. **Container / network** — run `vbcdx-forgejo serve` (or the Docker image) to
-   expose MCP over the network, with credentials supplied per request by header.
-
-Shapes 1 and 2 use **stdio + credential files** (the default, unchanged). Shape 3
-uses the **network transport** described next.
-
-## Network mode (`serve`): MCP over Streamable HTTP
-
-`vbcdx-forgejo serve` starts an MCP server over the **Streamable HTTP** transport
-(the current MCP network transport; responses are streamed over Server-Sent
-Events). It exposes the **same finite 33-tool catalogue** — it is **not** a
-generic Forgejo API proxy. For a worked client setup, see
-[Using with Hermes Agent](#using-with-hermes-agent).
+Credentials are never passed on the command line or in the environment. Every tool takes a
+`credential_file` argument: the absolute path to a file like this:
 
 ```sh
-VBCDX_FORGEJO_URL=https://git.example.com \
-VBCDX_FORGEJO_WRITES=off \
-npx vbcdx-forgejo serve
-# → MCP endpoint:  POST http://0.0.0.0:8080/mcp
-# → liveness:      GET  http://0.0.0.0:8080/healthz
+VBCDX_AGENTS_ROLE=code-agent
+VBCDX_AGENTS_USER=example-bot
+VBCDX_AGENTS_TOKEN=<forgejo access token>
+# VBCDX_AGENTS_PASSWORD=<optional, used once if the token is rejected with 401>
 ```
 
-### Credentials per request, by header
+The file must be a regular file you own with mode `0600`, in a directory with mode `0700`:
 
-There is **no credential file and no `credential_file` argument** in this mode —
-credentials arrive per request in the `Authorization` header, are used for that
-one request, and are never cached:
+```sh
+install -d -m 0700 ~/.config/vbcdx/forgejo
+install -m 0600 /dev/null ~/.config/vbcdx/forgejo/code-agent.env
+```
 
-| Header | Meaning |
-| --- | --- |
-| `Authorization: Bearer <PAT>` | Personal access token. Forwarded upstream as Forgejo's `token` scheme. |
-| `Authorization: token <PAT>` | Same as Bearer; accepted for Forgejo/Gitea familiarity. |
-| `Authorization: Basic <base64(user:password)>` | Username/password. Forwarded verbatim. |
+See [examples/credential-file.env](examples/credential-file.env) for the full format.
 
-Tool discovery (`tools/list`) works **without** any credential. A tool *call*
-without a credential returns an actionable, redacted error — never a crash.
+## Network mode
 
-A single header carries one scheme, so header mode presents exactly one
-credential. The token→Basic-after-`401` retry is a **credential-file** feature (a
-file can hold both a token and a password) and does not apply here.
+`vbcdx-forgejo serve` exposes the same tools over MCP Streamable HTTP:
 
-### Configuration
+```sh
+VBCDX_FORGEJO_URL=https://git.example.com vbcdx-forgejo serve
+# MCP endpoint: POST http://127.0.0.1:8080/mcp
+# Liveness:     GET  http://127.0.0.1:8080/healthz
+```
 
-`serve` reads the three settings above (`VBCDX_FORGEJO_URL`,
-`VBCDX_FORGEJO_WRITES`, `VBCDX_FORGEJO_TIMEOUT_MS`) plus:
+In this mode there is no credential file. Each request carries its own credential in the
+`Authorization` header (`Bearer <token>`, `token <token>`, or `Basic <base64(user:password)>`),
+which is used for that request only.
 
-| Setting | Meaning |
-| --- | --- |
-| `VBCDX_FORGEJO_HTTP_PORT` | Listen port (default `8080`). |
-| `VBCDX_FORGEJO_HTTP_HOST` | Bind address (default `0.0.0.0`). |
-| `VBCDX_FORGEJO_TLS_CERT` | PEM certificate path; serve HTTPS directly when set with the key. |
-| `VBCDX_FORGEJO_TLS_KEY` | PEM private-key path. Set **both** cert and key, or neither. |
+| Variable | Default | Description |
+| --- | --- | --- |
+| `VBCDX_FORGEJO_HTTP_PORT` | `8080` | Listen port. |
+| `VBCDX_FORGEJO_HTTP_HOST` | `127.0.0.1` | Bind address. |
+| `VBCDX_FORGEJO_TLS_CERT` | none | PEM certificate path. Set together with the key to serve HTTPS. |
+| `VBCDX_FORGEJO_TLS_KEY` | none | PEM private key path. |
+| `VBCDX_FORGEJO_HTTP_ALLOWED_ORIGINS` | none | Comma-separated browser origins allowed to call the server. Requests with any other `Origin` header get `403`. |
 
-**Credentials are never read from the environment** — only per request, by header.
-The write gate (`off` / `write` / `full`) applies identically to stdio: a
-destructive tool does not become reachable because the transport changed.
-
-### TLS
-
-- Set `VBCDX_FORGEJO_TLS_CERT` and `VBCDX_FORGEJO_TLS_KEY` to serve **HTTPS
-  directly**.
-- Otherwise it serves plain **HTTP**, intended to run **behind a TLS-terminating
-  reverse proxy** (for example Caddy or your platform's ingress) or on a trusted
-  local network only — it logs that posture at startup.
-- The **outbound** connection to Forgejo always verifies TLS; verification is
-  never disabled.
+Without TLS settings the server speaks plain HTTP; run it behind a TLS-terminating reverse proxy or
+on a trusted network. Outbound connections to Forgejo always verify TLS.
 
 ### Docker
 
-The image runs `serve` as a non-root user; the base image is pinned by version
-and digest and ships a `HEALTHCHECK`. No credentials are baked into the image.
-
 ```sh
 docker build -t vbcdx-forgejo .
-
 docker run --rm -p 8080:8080 \
   -e VBCDX_FORGEJO_URL=https://git.example.com \
-  -e VBCDX_FORGEJO_WRITES=off \
   vbcdx-forgejo
 ```
 
-Then drive it with any MCP Streamable HTTP client against `http://localhost:8080/mcp`,
-sending the `Authorization` header per request. To serve HTTPS directly, mount a
-cert and key and point the two TLS variables at them:
+The image runs `serve` as a non-root user and listens on all interfaces. No credentials are stored
+in the image.
 
-```sh
-docker run --rm -p 8443:8443 \
-  -e VBCDX_FORGEJO_URL=https://git.example.com \
-  -e VBCDX_FORGEJO_HTTP_PORT=8443 \
-  -e VBCDX_FORGEJO_TLS_CERT=/tls/cert.pem \
-  -e VBCDX_FORGEJO_TLS_KEY=/tls/key.pem \
-  -v /path/to/tls:/tls:ro \
-  vbcdx-forgejo
-```
+## Tools
 
-### Using with Hermes Agent
+Run `vbcdx-forgejo manifest` for every tool's input and output schema.
 
-[Hermes Agent](https://github.com/NousResearch/hermes-agent) is an MCP client
-that connects to stdio servers (`command`) and to HTTP servers (`url` +
-`headers`). Use `serve` rather than the stdio companion when Hermes runs
-somewhere the stdio path can't reach: for example a container without Node.js
-(the stdio companion needs Node.js ≥ 22), or one Hermes profile per agent, where
-each profile has its own `HERMES_HOME` with its own `config.yaml` and `.env` and
-no `credential_file` on the machine that runs the server.
+| Effect | Tools |
+| --- | --- |
+| Read | `whoami`, `list_repositories`, `get_repository`, `list_branches`, `get_file`, `list_issues`, `get_issue`, `list_comments`, `get_comment`, `list_labels`, `list_milestones`, `list_pull_requests`, `get_pull_request`, `get_pull_request_diff`, `list_pull_request_files`, `list_reviews`, `get_review`, `list_commit_statuses`, `list_workflow_runs`, `get_workflow_run`, `list_workflow_jobs` |
+| Write (`write` or `full`) | `create_repository`, `create_issue`, `update_issue`, `set_issue_labels`, `create_comment`, `update_comment`, `create_pull_request`, `update_pull_request`, `create_review`, `set_commit_status`, `dispatch_workflow` |
+| Destructive (`full` only) | `delete_comment`, `merge_pull_request`, `cancel_workflow_run` |
 
-The request path is:
+Destructive tools also require an exact confirmation string naming the target, and edits to
+comments or pull requests check the expected current state (a body hash or head SHA) first.
 
-```text
-Hermes profile ──▶ LiteLLM MCP gateway (auth_type: true_passthrough) ──▶ vbcdx-forgejo serve ──▶ Forgejo
-```
+`list_reviews` caps each review body at 2000 characters by default (`body_max_chars`) and can
+filter by `commit_id` and `state`; use `get_review` to read one review in full.
 
-Each agent sends its **own** Forgejo token in the `Authorization` header on
-every request. LiteLLM's `true_passthrough` mode forwards the caller's
-`Authorization` header to the upstream MCP server unchanged instead of treating
-it as a LiteLLM key. `serve` uses the header for that one request only. It never
-caches it and never logs header values. The LiteLLM hop is optional: Hermes can
-point `url` straight at `serve`'s `/mcp` endpoint.
+### Results
 
-In each profile's `$HERMES_HOME/config.yaml` (default `~/.hermes/config.yaml`):
+Each call returns a text summary and a JSON envelope in `structuredContent` with `outcome`,
+`effect`, `request` and `verification`. The outcome is one of `ok`, `accepted`, `refused`,
+`failed`, `unverified` or `indeterminate`.
 
-```yaml
-mcp_servers:
-  forgejo:
-    # LiteLLM's MCP route for this server, or serve's own /mcp endpoint.
-    url: "https://mcp-gateway.example.com/mcp/forgejo"
-    headers:
-      Authorization: "Bearer ${FORGEJO_TOKEN}"
-```
-
-and that agent's token in the same profile's `$HERMES_HOME/.env`:
-
-```sh
-FORGEJO_TOKEN=<this agent's Forgejo personal access token>
-```
-
-Hermes resolves `${VAR}` placeholders in `headers` from the environment,
-including the profile's `.env`, when it connects. A `url` entry with no
-`transport` key uses Streamable HTTP, which is what `serve` speaks. Do not set
-`transport: sse`. After editing, run `/reload-mcp`. The tools show up in Hermes as
-`mcp_forgejo_<tool>` (for example `mcp_forgejo_whoami`).
-
-## Registration
-
-See `examples/registration.md` and `examples/opencode.json` for Claude Code,
-Codex, OpenCode and DSH. Registration is not proof of discovery — verify with a
-real `tools/list` and a `whoami` call.
-
-## Result semantics
-
-Every call returns one human-readable text plus a JSON envelope in
-`structuredContent` with `outcome`, `effect`, `request` and `verification`.
-Outcomes distinguish verified success (`ok`/`accepted`) from `refused`,
-`failed`, `unverified` and `indeterminate` — a timed-out or ambiguous write is
-never reported as "nothing changed".
-
-## Forgejo MCP options
-
-There is **no official Forgejo MCP server.** The candidate repositories
-`codeberg.org/forgejo/forgejo-mcp` and `forgejo-contrib/forgejo-mcp` both return
-404, and the Forgejo project publishes no MCP server of its own (checked
-2026-09-15).
-
-Gitea — which Forgejo was forked from — does ship an official server,
-[`gitea/gitea-mcp`](https://gitea.com/gitea/gitea-mcp) (MIT, v1.7.0, 2026-08-27).
-It is written in Go and distributed as a prebuilt binary, a Docker image, or via
-`go run gitea.com/gitea/gitea-mcp@latest` — there is no npm/npx path, and its
-documentation does not claim Forgejo compatibility.
-
-Third-party Forgejo MCP servers exist on npm, none published by the Forgejo
-project:
-
-| Package | Latest | License | `npx`-runnable |
-| --- | --- | --- | --- |
-| [`@rubicontv/forgejo-mcp`](https://www.npmjs.com/package/@rubicontv/forgejo-mcp) | 0.17.0 (2026-09-03) | Apache-2.0 | yes (has `bin`) |
-| [`@ric_/forgejo-mcp`](https://www.npmjs.com/package/@ric_/forgejo-mcp) | 0.1.7 (2026-06-18) | MIT | yes (has `bin`) |
-| [`forgejo-mcp`](https://www.npmjs.com/package/forgejo-mcp) (unscoped) | 1.2.0 (2025-04-09) | GPL-3.0-or-later | no (`bin`-less) |
-
-Those aim for broad coverage of the Forgejo API. This package takes the opposite
-approach: a finite, audited catalogue of 33 tools with explicit write and
-destructive controls (`VBCDX_FORGEJO_WRITES`) and a verified result envelope,
-rather than a generic API surface. Choose whichever fits your needs; this
-package claims no official endorsement.
-
-## What it deliberately is not
-
-No generic API proxy, shell/curl wrapper, env reader, local workspace
-management, Git credential helper, browser-cookie login, runner or webhook
-administration, repository deletion, or a CI re-run route (this Forgejo exposes
-none).
-
-## Running from a checkout
-
-For contributors and for anyone running the code before it is published, invoke
-the entrypoint directly from a working copy. This is a development convenience,
-**not** the consumer install path above:
-
-```sh
-node bin/vbcdx-forgejo.js --version
-node bin/vbcdx-forgejo.js --help
-node bin/vbcdx-forgejo.js manifest      # deterministic JSON tool manifest
-node bin/vbcdx-forgejo.js mcp           # stdio MCP server
-```
-
-## Tests
+## Development
 
 ```sh
 npm ci
 npm test
+node bin/vbcdx-forgejo.js --help
 ```
 
-## Continuous integration
+## License
 
-CI runs on a self-hosted runner selected by the `CI_RUNNER_LABEL` repository (or
-org) variable. Set it to a label your runner advertises (e.g. `self-hosted`). If
-it is unset, the workflow's `runs-on` evaluates to an empty string, which matches
-no runner, so every job is silently skipped with no error explaining why.
+[MIT](LICENSE)

@@ -1,4 +1,4 @@
-// Per-call credential loading (spec §4).
+// Per-call credential loading (contract §4).
 //
 // Every catalog tool receives an absolute `credential_file`. We read exactly
 // that file, for that one call, and never search, select a role, borrow another
@@ -177,7 +177,7 @@ export async function loadCredential(filePath, opts = {}) {
 }
 
 /**
- * Ordered authentication attempts for a credential (spec §4).
+ * Ordered authentication attempts for a credential (contract §4).
  * Token first (`Authorization: token <token>`); the Basic USER/PASSWORD attempt
  * is used only as the single retry after an explicit 401 on the token request.
  * With no token, Basic is the sole attempt and there is no fallback.

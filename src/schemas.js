@@ -85,6 +85,12 @@ S.review = obj({
   html_url: str,
 });
 
+/**
+ * A review as listed by `list_reviews`: the body may be capped, and the item
+ * records the body's true length and whether it was cut.
+ */
+S.reviewSummary = obj({ ...S.review.properties, body_truncated: bool, body_length: int });
+
 S.status = obj({ id: int, context: str, state: str, description: str, target_url: str, created_at: str });
 
 S.run = obj({

@@ -1,4 +1,4 @@
-// Launch configuration (spec §3).
+// Launch configuration (contract §3).
 //
 // Only three service settings affect the server, and they are read exactly once
 // per process. Nothing else — no CODE_HOST_*, no FORGEJO_AGENT, no ambient
@@ -13,6 +13,31 @@ import {
   WRITE_MODES,
 } from './constants.js';
 
+// A harness that writes `${VAR}` references (Hermes does, for a stdio server's settings)
+// passes the text through literally when VAR is unset. Such a value is never a real
+// setting, so it counts as unset: an optional setting then takes its default instead of
+// failing every call.
+const UNEXPANDED = /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/;
+
+/** True when `v` is exactly an unexpanded `${NAME}` reference (surrounding spaces allowed). */
+export function isUnexpanded(v) {
+  return typeof v === 'string' && UNEXPANDED.test(v.trim());
+}
+
+/**
+ * A copy of `env` without the VBCDX_FORGEJO_* values that are an unexpanded `${NAME}`.
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {NodeJS.ProcessEnv}
+ */
+export function withoutUnexpanded(env) {
+  const out = {};
+  for (const [k, v] of Object.entries(env)) {
+    if (k.startsWith('VBCDX_FORGEJO_') && isUnexpanded(v)) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
 /**
  * @param {NodeJS.ProcessEnv} [env]
  * @returns {{
@@ -23,6 +48,7 @@ import {
  * }}
  */
 export function loadConfig(env = process.env) {
+  env = withoutUnexpanded(env);
   const rawUrl = env.VBCDX_FORGEJO_URL;
   const rawWrites = env.VBCDX_FORGEJO_WRITES;
   const rawTimeout = env.VBCDX_FORGEJO_TIMEOUT_MS;

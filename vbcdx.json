@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "server_name": "forgejo",
+  "contract": "vbcdx.forgejo/1",
+  "stdio": { "bin": "vbcdx-forgejo", "args": ["mcp"] },
+  "http": { "args": ["serve"], "path": "/mcp", "port_env": "VBCDX_FORGEJO_HTTP_PORT" },
+  "env": [
+    { "name": "VBCDX_FORGEJO_URL", "description": "Forgejo instance origin, optionally with a deployment subpath and a trailing api/v1 path", "kind": "config", "required": true },
+    { "name": "VBCDX_FORGEJO_WRITES", "description": "Write gate: off (default, reads only), write, or full (also destructive tools)", "kind": "config", "required": false },
+    { "name": "VBCDX_FORGEJO_TIMEOUT_MS", "description": "Total per-call deadline in milliseconds, 1000 to 120000 (default 30000)", "kind": "config", "required": false },
+    { "name": "VBCDX_FORGEJO_HTTP_PORT", "description": "Network mode only: listen port (default 8080)", "kind": "config", "required": false, "modes": ["http"] },
+    { "name": "VBCDX_FORGEJO_HTTP_HOST", "description": "Network mode only: bind address (default loopback only; the Docker image listens on all interfaces)", "kind": "config", "required": false, "modes": ["http"] },
+    { "name": "VBCDX_FORGEJO_TLS_CERT", "description": "Network mode only: PEM certificate path, set together with the key to serve HTTPS", "kind": "config", "required": false, "modes": ["http"] },
+    { "name": "VBCDX_FORGEJO_TLS_KEY", "description": "Network mode only: PEM private key path, set together with the certificate", "kind": "config", "required": false, "modes": ["http"] },
+    { "name": "VBCDX_FORGEJO_HTTP_ALLOWED_ORIGINS", "description": "Network mode only: comma-separated browser origins allowed to call the server (default none)", "kind": "config", "required": false, "modes": ["http"] }
+  ],
+  "credential_file": { "argument": "credential_file" },
+  "manifest": { "args": ["manifest"] }
+}

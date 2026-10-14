@@ -1,0 +1,8 @@
+Vendored from VBCDX/vbcdx at ee297326d46f5e164a95cf247f617474e6e712c1, byte-identical.
+Replace with a devDependency on @vbcdx/vbcdx once it is published.
+test/vbcdx-json.test.js checks these hashes, so an edit here fails CI.
+
+3ed9c7470d0d95f1900d9ccf05dd039787e5264e4bb072c23422582821282de7  src/install/tool-declaration.js
+20e15685c184597e72d80cb340767765dd5c9e84431238721f479225da375635  src/config/json.js
+5c499779346c734a845c46cdee3c3c549294ff6abad8fbedd17c33390614b786  src/errors.js
+beffcf48d185d9b241b3b857905032c1c2498ee795e7cc21b83731de1568a73a  schema/vbcdx-tool.schema.json

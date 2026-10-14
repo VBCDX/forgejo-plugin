@@ -1,4 +1,4 @@
-// CLI dispatch (spec §1). Commands: mcp, manifest, --help, --version.
+// CLI dispatch (contract §1). Commands: mcp, manifest, --help, --version.
 // Any unknown command or option exits 2.
 
 import { readFileSync } from 'node:fs';
@@ -29,9 +29,10 @@ Service configuration (environment, read once at startup):
 
 Network mode (serve) additionally reads:
   VBCDX_FORGEJO_HTTP_PORT   Listen port (default 8080).
-  VBCDX_FORGEJO_HTTP_HOST   Bind address (default 0.0.0.0).
+  VBCDX_FORGEJO_HTTP_HOST   Bind address (default 127.0.0.1; the Docker image sets 0.0.0.0).
   VBCDX_FORGEJO_TLS_CERT    PEM certificate path; serve HTTPS directly when set with the key.
   VBCDX_FORGEJO_TLS_KEY     PEM private-key path (both cert and key, or neither).
+  VBCDX_FORGEJO_HTTP_ALLOWED_ORIGINS  Browser origins allowed to call serve (default none: any Origin gets 403).
   Endpoints: POST /mcp (MCP), GET /healthz (liveness). Credentials arrive per request in the
   Authorization header (Bearer/token <PAT> or Basic <base64(user:password)>), never from the environment.
 

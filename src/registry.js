@@ -62,7 +62,7 @@ export function toolNames() {
   return TOOLS.map((t) => t.name);
 }
 
-// MCP tool annotations derived from the declared effect (spec §5). read =>
+// MCP tool annotations derived from the declared effect (contract §5). read =>
 // readOnly; write => not read-only, not destructive; destructive => destructive.
 export function annotationsFor(effect) {
   return {

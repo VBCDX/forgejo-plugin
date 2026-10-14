@@ -1,4 +1,4 @@
-// Per-request credential resolution for the network transport (issue #8).
+// Per-request credential resolution for the network transport.
 //
 // The stdio server reads a credential *file*; the network server instead takes
 // a credential from the request's `Authorization` header — one header, one
