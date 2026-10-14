@@ -11,7 +11,7 @@
 import { createHash } from 'node:crypto';
 import { request } from './http.js';
 import { ToolError, TransportError, failed, indeterminate } from './errors.js';
-import { DEFAULT_LIMIT, MIN_LIMIT, MAX_LIMIT, MAX_INPUT_BODY_BYTES } from './constants.js';
+import { DEFAULT_LIMIT, MIN_LIMIT, MAX_LIMIT, MAX_INPUT_BODY_BYTES, MIN_COMMIT_PREFIX } from './constants.js';
 
 // ---------- input schema fragments ----------
 
@@ -31,6 +31,12 @@ export const offsetLimit = {
 };
 
 export const shaSchema = { type: 'string', pattern: '^([0-9a-f]{40}|[0-9a-f]{64})$' };
+/**
+ * A full commit id or a prefix of one. At least MIN_COMMIT_PREFIX hex characters:
+ * a shorter prefix can match the wrong round's review, silently defeating the
+ * filter.
+ */
+export const commitIdPrefixSchema = { type: 'string', pattern: `^[0-9a-f]{${MIN_COMMIT_PREFIX},64}$` };
 export const bodySha256Schema = { type: 'string', pattern: '^[0-9a-f]{64}$' };
 export const positiveInt = { type: 'integer', minimum: 1 };
 export const bodyText = { type: 'string', maxLength: MAX_INPUT_BODY_BYTES };
@@ -255,7 +261,19 @@ export function windowEnvelope({ array, offset, limit, terminal }) {
  * Retrieve enough of an upstream array to serve a local window, honestly.
  * Only an empty page establishes the end (a short page may be a host limit
  * clamp, not completion). Stops once it holds `need`+1 items, hits an empty
- * page (terminal) or reaches a hard cap (not terminal).
+ * page (terminal), a page that adds no new items (terminal), or reaches a
+ * hard cap (not terminal).
+ *
+ * Some routes ignore `page`/`limit` and return the whole list on every call
+ * (Forgejo's issue-comments route has no pagination parameters at all).
+ * There no page is ever empty, so a page made only of items already held is
+ * the end. Only items with an `id` (0 included; null/undefined excluded)
+ * take part: they are de-duplicated by id, which also absorbs the overlap a
+ * paged route shows when items are inserted between two page reads. Id-less
+ * items are always appended and never make a page count as "nothing new":
+ * identical id-less records are not provably the same item, so they must not
+ * end a listing with an unprovable total — such a route reads on
+ * to its empty page or the `need`/HARD_CAP bound and reports truncation.
  *
  * @returns {Promise<{array:object[], terminal:boolean}>}
  */
@@ -263,6 +281,8 @@ export async function fetchArrayBounded(call, phase, { path, query = {}, auth, n
   const perPage = MAX_LIMIT;
   const HARD_CAP = 1000;
   const array = [];
+  const seen = new Set();
+  const hasId = (item) => item !== null && typeof item === 'object' && item.id !== undefined && item.id !== null;
   let page = 1;
   let terminal = false;
   for (;;) {
@@ -273,7 +293,19 @@ export async function fetchArrayBounded(call, phase, { path, query = {}, auth, n
       terminal = true;
       break;
     }
-    array.push(...batch);
+    let added = 0;
+    for (const item of batch) {
+      if (hasId(item)) {
+        if (seen.has(item.id)) continue;
+        seen.add(item.id);
+      }
+      array.push(item);
+      added += 1;
+    }
+    if (added === 0) {
+      terminal = true;
+      break;
+    }
     page += 1;
   }
   return { array, terminal };
@@ -282,7 +314,7 @@ export async function fetchArrayBounded(call, phase, { path, query = {}, auth, n
 // ---------- confirmation ----------
 
 /**
- * Enforce an exact confirmation string (spec §6). Confirmations are an accident
+ * Enforce an exact confirmation string (contract §6). Confirmations are an accident
  * control and are never sent to the upstream API.
  * @throws {ToolError} refused/confirmation_required | confirmation_mismatch
  */

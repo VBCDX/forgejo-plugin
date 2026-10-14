@@ -1,6 +1,6 @@
 {
   "name": "@vbcdx/forgejo-plugin",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "MCP server exposing a finite, verified Forgejo tool catalog. Contract vbcdx.forgejo/1.",
   "type": "module",
   "license": "MIT",
@@ -20,28 +20,34 @@
     "bin/",
     "src/",
     "examples/",
-    "cordis.patch.yml",
+    "docs/",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "vbcdx.json",
+    ".env.example"
   ],
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
-    "manifest": "node bin/vbcdx-forgejo.js manifest"
+    "manifest": "node bin/vbcdx-forgejo.js manifest",
+    "lint": "node scripts/lint.mjs"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.30.0"
+    "@modelcontextprotocol/sdk": "1.32.1"
   },
   "devDependencies": {
-    "vitest": "2.1.9"
-  },
-  "dsh": {
-    "plugin": true,
-    "bundle": {
-      "patch": "./cordis.patch.yml"
-    }
+    "vitest": "4.1.11"
   },
   "publishConfig": {
     "access": "public"
+  },
+  "author": "VBCDX",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/VBCDX/forgejo-plugin.git"
+  },
+  "homepage": "https://github.com/VBCDX/forgejo-plugin#readme",
+  "bugs": {
+    "url": "https://github.com/VBCDX/forgejo-plugin/issues"
   }
 }

@@ -1,4 +1,4 @@
-// The shared credential-file grammar (owned by the dev-agents spec §4).
+// The credential-file grammar (contract §4), shared with the vbcdx installer.
 //
 // A credential file is a literal configuration file, never shell code. This
 // parser does not source, execute, interpolate, expand ~ or read ambient

@@ -1,4 +1,4 @@
-// The `mcp` command: a stdio MCP server (spec §2, §3).
+// The `mcp` command: a stdio MCP server (contract §2 and contract §3).
 //
 // Only protocol frames go to stdout (the SDK's stdio transport owns it);
 // every diagnostic goes to stderr, redacted. Tools stay discoverable even with

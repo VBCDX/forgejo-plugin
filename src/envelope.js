@@ -1,4 +1,4 @@
-// The result envelope (spec §5).
+// The result envelope (contract §5).
 //
 // Every call returns exactly one complete human-readable text plus the same
 // JSON object in structuredContent. Required fields are outcome, effect,

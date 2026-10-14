@@ -1,4 +1,4 @@
-// Read projections (spec §6).
+// Read projections (contract §6).
 //
 // Every read output uses only the defined fields for its resource type. An
 // optional field is omitted when the source is absent; omitted values are
@@ -126,6 +126,25 @@ export function projectReview(r) {
   put(out, 'stale', r.stale);
   put(out, 'dismissed', r.dismissed);
   put(out, 'html_url', r.html_url);
+  return out;
+}
+
+/**
+ * Project a review for a list, capping its body. The cap counts
+ * characters — Unicode code points, one per UTF-8 sequence — so a cut can never
+ * land inside a multi-byte sequence or split a surrogate pair. The item records
+ * `body_length`, the body's true length in code points, so a caller can tell how
+ * much was cut; `body_truncated` is always present when there is a body.
+ */
+export function projectReviewSummary(r, { bodyMaxChars }) {
+  const out = projectReview(r);
+  if (typeof out.body === 'string') {
+    const points = Array.from(out.body);
+    out.body_length = points.length;
+    const cut = points.length > bodyMaxChars;
+    if (cut) out.body = points.slice(0, bodyMaxChars).join('');
+    out.body_truncated = cut;
+  }
   return out;
 }
 

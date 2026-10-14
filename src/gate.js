@@ -1,4 +1,4 @@
-// The write-mode gate (spec §5).
+// The write-mode gate (contract §5).
 //
 // It is an accident control, not a human-approval or identity boundary. It runs
 // before any credential read or network request and cannot be bypassed through

@@ -17,4 +17,3 @@ Dockerfile
 *.log
 .DS_Store
 README.md
-cordis.patch.yml

@@ -1,4 +1,4 @@
-# Container image for the network-served Forgejo MCP server (issue #8).
+# Container image for the network-served Forgejo MCP server.
 #
 # Runs `vbcdx-forgejo serve` — MCP over Streamable HTTP, credentials supplied per
 # request in the Authorization header. No credentials are ever baked into the

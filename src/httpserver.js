@@ -1,4 +1,4 @@
-// The `serve` command: a network-served MCP server (issue #8).
+// The `serve` command: a network-served MCP server.
 //
 // Transport is MCP **Streamable HTTP** (the current transport, superseding the
 // old HTTP+SSE pair), with responses streamed over Server-Sent Events — one
@@ -9,9 +9,20 @@
 // Credentials arrive per request in the `Authorization` header (Bearer/token or
 // Basic), are resolved fresh for that one request via credential-header.js, and
 // are never cached. Tool discovery works with no credentials; an uncredentialed
-// call returns a redacted, actionable error. The write gate, the finite 33-tool
+// call returns a redacted, actionable error. The write gate, the finite tool
 // catalogue, redaction and the outbound TLS posture are all identical to stdio —
 // only the transport and the credential source change.
+//
+// Origin (DNS rebinding): the MCP transport spec says servers MUST validate the
+// Origin header on every incoming connection. Server-to-server clients (the
+// SDK client, LiteLLM's MCP client) send none, so a request that carries an
+// Origin is refused with 403 unless VBCDX_FORGEJO_HTTP_ALLOWED_ORIGINS lists it
+// SDK 1.30.0's allowedOrigins cannot express "refuse
+// every Origin", so the check lives here, before routing. It protects POST /mcp,
+// which a browser always sends with an Origin. It does not protect a same-origin
+// GET such as /healthz after a DNS rebind: browsers send no Origin on same-origin
+// GET/HEAD. /healthz returns only status, service and
+// the tool count; do not add anything sensitive to a GET route on its strength.
 //
 // Lightweight: the listener is built on Node's built-in node:http / node:https;
 // the only dependency is the already-pinned @modelcontextprotocol/sdk (its HTTP
@@ -25,7 +36,7 @@ import { fileURLToPath } from 'node:url';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { ListToolsRequestSchema, CallToolRequestSchema, McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
-import { loadConfig } from './config.js';
+import { loadConfig, withoutUnexpanded, isUnexpanded } from './config.js';
 import { TOOLS, getTool, annotationsFor, httpInputSchema } from './registry.js';
 import { executeTool } from './dispatch.js';
 import { authFromHeader } from './credential-header.js';
@@ -33,6 +44,8 @@ import { SERVER_NAME } from './constants.js';
 
 export const DEFAULT_HTTP_PORT = 8080;
 const MCP_PATH = '/mcp';
+// Network settings an unexpanded reference must not silently drop (see loadHttpOptions).
+const FAIL_CLOSED_SETTINGS = ['VBCDX_FORGEJO_TLS_CERT', 'VBCDX_FORGEJO_TLS_KEY', 'VBCDX_FORGEJO_HTTP_HOST'];
 const HEALTH_PATH = '/healthz';
 
 function version() {
@@ -49,6 +62,15 @@ function stderrLog(msg) {
  * absent — they arrive per request by header, never from the environment.
  */
 export function loadHttpOptions(env = process.env) {
+  // These choose HTTPS and the listening interface. An unexpanded reference for one of them
+  // means the operator meant a value the harness did not supply, so serve refuses to start
+  // rather than falling back to cleartext or every interface (fail closed). Every other
+  // setting falls back to its default, which is the safe choice for it.
+  const unresolved = FAIL_CLOSED_SETTINGS.filter((k) => isUnexpanded(env[k]));
+  const unexpandedError = unresolved.length
+    ? `${unresolved.join(', ')} ${unresolved.length === 1 ? 'is' : 'are'} an unexpanded \${...} reference; set ${unresolved.length === 1 ? 'it' : 'them'} to a real value or leave ${unresolved.length === 1 ? 'it' : 'them'} unset.`
+    : null;
+  env = withoutUnexpanded(env);
   const rawPort = env.VBCDX_FORGEJO_HTTP_PORT;
   let port = DEFAULT_HTTP_PORT;
   let portError = null;
@@ -60,16 +82,62 @@ export function loadHttpOptions(env = process.env) {
       port = Number(v);
     }
   }
+  // Outside the container image the server listens on loopback only unless told otherwise
+  //; the image sets VBCDX_FORGEJO_HTTP_HOST=0.0.0.0 itself.
   const host = env.VBCDX_FORGEJO_HTTP_HOST && String(env.VBCDX_FORGEJO_HTTP_HOST).trim() !== ''
     ? String(env.VBCDX_FORGEJO_HTTP_HOST).trim()
-    : '0.0.0.0';
+    : '127.0.0.1';
   const certPath = env.VBCDX_FORGEJO_TLS_CERT && String(env.VBCDX_FORGEJO_TLS_CERT).trim() !== ''
     ? String(env.VBCDX_FORGEJO_TLS_CERT).trim()
     : null;
   const keyPath = env.VBCDX_FORGEJO_TLS_KEY && String(env.VBCDX_FORGEJO_TLS_KEY).trim() !== ''
     ? String(env.VBCDX_FORGEJO_TLS_KEY).trim()
     : null;
-  return { port, host, certPath, keyPath, portError };
+  const { allowedOrigins, originsError } = parseAllowedOrigins(env.VBCDX_FORGEJO_HTTP_ALLOWED_ORIGINS);
+  return { port, host, certPath, keyPath, portError, allowedOrigins, originsError, unexpandedError };
+}
+
+// Browser Origin form: scheme://host[:port], normalised by URL (lower case,
+// default port dropped). Anything else, including the opaque "null", is not an
+// origin a browser page could be allowed from.
+function normalizeOrigin(value) {
+  try {
+    const u = new URL(String(value).trim());
+    if ((u.protocol !== 'http:' && u.protocol !== 'https:') || u.origin === 'null') return null;
+    return u.origin;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Parse VBCDX_FORGEJO_HTTP_ALLOWED_ORIGINS: comma-separated origins such as
+ * `https://chat.example.com`. Unset or empty = no Origin is allowed.
+ */
+export function parseAllowedOrigins(raw) {
+  const allowedOrigins = [];
+  if (raw === undefined || String(raw).trim() === '') return { allowedOrigins, originsError: null };
+  for (const part of String(raw).split(',')) {
+    if (part.trim() === '') continue;
+    const o = normalizeOrigin(part);
+    // An origin has no path, query, fragment or credentials; refuse an entry
+    // that does rather than silently widening it to its origin. A wildcard host
+    // (`https://*.example.com`) parses as a URL but no browser sends it, so it
+    // would silently allow nothing: refuse it too.
+    const u = o === null ? null : new URL(part.trim());
+    if (u === null || u.pathname !== '/' || u.search || u.hash || u.username || u.password || u.hostname.includes('*')) {
+      return { allowedOrigins: [], originsError: 'VBCDX_FORGEJO_HTTP_ALLOWED_ORIGINS must be comma-separated http(s) origins (scheme://host[:port]).' };
+    }
+    allowedOrigins.push(o);
+  }
+  return { allowedOrigins, originsError: null };
+}
+
+/** True when the request carries no Origin, or one that is explicitly allowed. */
+export function originAllowed(originHeader, allowedOrigins = []) {
+  if (originHeader === undefined) return true;
+  const o = normalizeOrigin(originHeader);
+  return o !== null && allowedOrigins.includes(o);
 }
 
 /**
@@ -85,8 +153,9 @@ export function loadHttpOptions(env = process.env) {
  * @returns {Promise<boolean>}
  */
 export function httpHealthcheck({ env = process.env } = {}) {
-  const { port } = loadHttpOptions(env);
-  const tls = !!(env.VBCDX_FORGEJO_TLS_CERT && env.VBCDX_FORGEJO_TLS_KEY);
+  const { port, certPath, keyPath, unexpandedError } = loadHttpOptions(env);
+  if (unexpandedError) return Promise.resolve(false); // serve refuses to start with these settings
+  const tls = !!(certPath && keyPath);
   const lib = tls ? https : http;
   const options = { host: '127.0.0.1', port, path: HEALTH_PATH, method: 'GET', timeout: 3000 };
   if (tls) options.rejectUnauthorized = false; // loopback self-check only
@@ -143,9 +212,16 @@ function buildServer({ config, authHeader, shutdownSignal, log }) {
 
 // Dispatch one Node HTTP request. Stateless: build a fresh server + transport,
 // serve, and tear both down when the response closes.
-async function handle(req, res, { config, shutdownController, log }) {
+async function handle(req, res, { config, shutdownController, log, allowedOrigins }) {
   const url = new URL(req.url, 'http://localhost');
   const path = url.pathname;
+
+  // Before routing, so a browser request that carries a foreign Origin gets no
+  // answer on any path. A same-origin GET carries none (see the top of the file,
+  //). The value is never echoed.
+  if (!originAllowed(req.headers.origin, allowedOrigins)) {
+    return sendJsonRpcError(res, 403, -32000, 'Origin not allowed. Browser pages cannot call this server unless VBCDX_FORGEJO_HTTP_ALLOWED_ORIGINS lists their origin.');
+  }
 
   if (req.method === 'GET' && path === HEALTH_PATH) {
     return sendJson(res, 200, { status: 'ok', service: SERVER_NAME, tools: TOOLS.length });
@@ -204,7 +280,10 @@ function sendJsonRpcError(res, status, code, message) {
  * @returns {Promise<{server:import('node:http').Server, port:number, close:()=>Promise<void>}>}
  */
 export async function runHttpServer({ config = loadConfig(), http: httpOpts = loadHttpOptions(), log = stderrLog, installSignals = true } = {}) {
+  if (httpOpts.unexpandedError) throw new Error(httpOpts.unexpandedError);
   if (httpOpts.portError) throw new Error(httpOpts.portError);
+  if (httpOpts.originsError) throw new Error(httpOpts.originsError);
+  const allowedOrigins = httpOpts.allowedOrigins || [];
   if ((httpOpts.certPath && !httpOpts.keyPath) || (!httpOpts.certPath && httpOpts.keyPath)) {
     throw new Error('TLS requires both VBCDX_FORGEJO_TLS_CERT and VBCDX_FORGEJO_TLS_KEY, or neither.');
   }
@@ -223,10 +302,10 @@ export async function runHttpServer({ config = loadConfig(), http: httpOpts = lo
       // Never echo the paths' contents; name only which setting failed.
       throw new Error('TLS certificate or key could not be read from the configured paths.');
     }
-    listener = https.createServer({ cert, key }, wrap({ config, shutdownController, log }));
+    listener = https.createServer({ cert, key }, wrap({ config, shutdownController, log, allowedOrigins }));
     tls = true;
   } else {
-    listener = http.createServer(wrap({ config, shutdownController, log }));
+    listener = http.createServer(wrap({ config, shutdownController, log, allowedOrigins }));
   }
 
   if (config.insecure) {

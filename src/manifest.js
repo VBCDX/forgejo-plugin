@@ -1,4 +1,4 @@
-// The `manifest` command output (spec §7).
+// The `manifest` command output (contract §7).
 //
 // A deterministic JSON object describing the offline tool interface for the
 // agents installer. It performs no network or file-secret access and starts no

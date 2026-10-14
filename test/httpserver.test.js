@@ -5,7 +5,7 @@
 // value ever reaches stdout/stderr on success or failure.
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { runHttpServer, httpHealthcheck, authFromHeader } from '../src/index.js';
+import { runHttpServer, httpHealthcheck, authFromHeader, loadHttpOptions, parseAllowedOrigins, originAllowed } from '../src/index.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { fakeHost, fakeConfig } from './helpers.js';
@@ -26,12 +26,12 @@ afterEach(async () => {
   host = undefined;
 });
 
-async function startServer(configOverrides) {
+async function startServer(configOverrides, { allowedOrigins } = {}) {
   logs = [];
   const config = fakeConfig(host.url, configOverrides);
   srv = await runHttpServer({
     config,
-    http: { port: 0, host: '127.0.0.1', certPath: null, keyPath: null, portError: null },
+    http: { port: 0, host: '127.0.0.1', certPath: null, keyPath: null, portError: null, allowedOrigins },
     log: (m) => logs.push(m),
     installSignals: false,
   });
@@ -53,12 +53,12 @@ const tokenHdr = (t) => ({ Authorization: `token ${t}` });
 const basic = (u, p) => ({ Authorization: `Basic ${Buffer.from(`${u}:${p}`, 'utf8').toString('base64')}` });
 
 describe('serve — discovery and routing', () => {
-  it('lists the same 33 tools without credentials, and drops credential_file from the schema', async () => {
+  it('lists the same 35 tools without credentials, and drops credential_file from the schema', async () => {
     host = await fakeHost({});
     await startServer();
     const c = await connect(null);
     const { tools } = await c.listTools();
-    expect(tools).toHaveLength(33);
+    expect(tools).toHaveLength(35);
     const whoami = tools.find((t) => t.name === 'whoami');
     expect(whoami.inputSchema.properties.credential_file).toBeUndefined();
     expect((whoami.inputSchema.required || [])).not.toContain('credential_file');
@@ -74,7 +74,7 @@ describe('serve — discovery and routing', () => {
     expect(r.status).toBe(200);
     const body = await r.json();
     expect(body.status).toBe('ok');
-    expect(body.tools).toBe(33);
+    expect(body.tools).toBe(35);
   });
 
   it('rejects GET /mcp with 405 and an unknown path with 404', async () => {
@@ -218,6 +218,65 @@ describe('serve — no credential value ever reaches stdout/stderr', () => {
   });
 });
 
+// The MCP transport spec's MUST on Origin (DNS
+// rebinding). Raw fetch, because the SDK client never sends an Origin.
+describe('serve — Origin validation', () => {
+  const whoamiCall = (origin, auth = bearer(SENTINEL)) => fetch(`http://127.0.0.1:${srv.port}/mcp`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      accept: 'application/json, text/event-stream',
+      ...auth,
+      ...(origin === undefined ? {} : { origin }),
+    },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'whoami', arguments: {} } }),
+  });
+
+  it('refuses any request carrying an Origin with 403, before any Forgejo request, and never echoes it', async () => {
+    host = await fakeHost({ 'GET /api/v1/user': () => ({ json: { id: 7, login: 'octo' } }) });
+    await startServer({ VBCDX_FORGEJO_WRITES: 'off' });
+    for (const origin of ['http://evil.example', 'http://127.0.0.1:8080', 'null', '']) {
+      const r = await whoamiCall(origin);
+      expect(r.status, origin).toBe(403);
+      const text = await r.text();
+      expect(text).toMatch(/Origin not allowed/);
+      if (origin.includes('://')) expect(text).not.toContain(origin);
+    }
+    const health = await fetch(`http://127.0.0.1:${srv.port}/healthz`, { headers: { origin: 'http://evil.example' } });
+    expect(health.status).toBe(403);
+    expect(host.requests).toHaveLength(0);
+  });
+
+  it('serves a request with no Origin, and one from an allowed origin (compared normalised)', async () => {
+    host = await fakeHost({ 'GET /api/v1/user': () => ({ json: { id: 7, login: 'octo' } }) });
+    await startServer({ VBCDX_FORGEJO_WRITES: 'off' }, { allowedOrigins: ['https://chat.example.com'] });
+    expect((await whoamiCall(undefined)).status).toBe(200);
+    expect((await whoamiCall('https://CHAT.example.com:443')).status).toBe(200);
+    expect((await whoamiCall('https://chat.example.com.evil.example')).status).toBe(403);
+    expect((await whoamiCall('http://chat.example.com')).status).toBe(403);
+    expect(host.requests).toHaveLength(2);
+  });
+
+  it('parses VBCDX_FORGEJO_HTTP_ALLOWED_ORIGINS strictly and refuses to start on a bad entry', async () => {
+    expect(parseAllowedOrigins(undefined)).toEqual({ allowedOrigins: [], originsError: null });
+    expect(parseAllowedOrigins(' https://a.example , http://b.example:8080 ,').allowedOrigins)
+      .toEqual(['https://a.example', 'http://b.example:8080']);
+    for (const bad of ['a.example', 'null', 'ftp://a.example', 'https://a.example/path', 'https://u:p@a.example', 'https://a.example?x=1', 'https://*.example.com', 'http://*:8080']) {
+      expect(parseAllowedOrigins(bad).originsError, bad).toMatch(/ALLOWED_ORIGINS/);
+    }
+    expect(loadHttpOptions({ VBCDX_FORGEJO_HTTP_ALLOWED_ORIGINS: 'https://a.example' }).allowedOrigins).toEqual(['https://a.example']);
+    expect(originAllowed(undefined, [])).toBe(true);
+    expect(originAllowed('https://a.example', [])).toBe(false);
+    host = await fakeHost({});
+    await expect(runHttpServer({
+      config: fakeConfig(host.url),
+      http: { port: 0, host: '127.0.0.1', certPath: null, keyPath: null, portError: null, originsError: 'VBCDX_FORGEJO_HTTP_ALLOWED_ORIGINS bad' },
+      log: () => {},
+      installSignals: false,
+    })).rejects.toThrow(/ALLOWED_ORIGINS/);
+  });
+});
+
 describe('authFromHeader — unit', () => {
   it('maps Bearer/token to a single upstream token attempt', () => {
     for (const h of [`Bearer ${SENTINEL}`, `token ${SENTINEL}`, `TOKEN ${SENTINEL}`]) {
@@ -255,8 +314,30 @@ describe('httpHealthcheck', () => {
     await startServer();
     const env = { VBCDX_FORGEJO_HTTP_PORT: String(srv.port) };
     expect(await httpHealthcheck({ env })).toBe(true);
+    // Unexpanded TLS references: serve would refuse to start, so the probe reports unhealthy
+    // rather than guessing a scheme.
+    expect(await httpHealthcheck({ env: { ...env, VBCDX_FORGEJO_TLS_CERT: '${VBCDX_FORGEJO_TLS_CERT}', VBCDX_FORGEJO_TLS_KEY: '${VBCDX_FORGEJO_TLS_KEY}' } })).toBe(false);
     await srv.close();
     srv = undefined;
     expect(await httpHealthcheck({ env })).toBe(false);
+  });
+});
+
+describe('network options and an unexpanded ${VAR}', () => {
+  const ref = (k) => '${' + k + '}';
+
+  it('port and origins fall back to their safe defaults', () => {
+    const o = loadHttpOptions({ VBCDX_FORGEJO_HTTP_PORT: ref('VBCDX_FORGEJO_HTTP_PORT'), VBCDX_FORGEJO_HTTP_ALLOWED_ORIGINS: ref('VBCDX_FORGEJO_HTTP_ALLOWED_ORIGINS') });
+    expect(o).toEqual({ port: 8080, host: '127.0.0.1', certPath: null, keyPath: null, portError: null, allowedOrigins: [], originsError: null, unexpandedError: null });
+  });
+
+  it('TLS and the bind host fail closed: serve refuses to start and names the settings', async () => {
+    for (const keys of [['VBCDX_FORGEJO_TLS_CERT'], ['VBCDX_FORGEJO_TLS_KEY'], ['VBCDX_FORGEJO_HTTP_HOST'], ['VBCDX_FORGEJO_TLS_CERT', 'VBCDX_FORGEJO_TLS_KEY']]) {
+      const o = loadHttpOptions(Object.fromEntries(keys.map((k) => [k, ` ${ref(k)} `])));
+      expect(o.unexpandedError, keys.join()).toBe(`${keys.join(', ')} ${keys.length === 1 ? 'is' : 'are'} an unexpanded \${...} reference; set ${keys.length === 1 ? 'it' : 'them'} to a real value or leave ${keys.length === 1 ? 'it' : 'them'} unset.`);
+      await expect(runHttpServer({ config: fakeConfig('http://127.0.0.1:1'), http: o, log: () => {}, installSignals: false })).rejects.toThrow(/unexpanded/);
+    }
+    // A real value is still used as given.
+    expect(loadHttpOptions({ VBCDX_FORGEJO_HTTP_HOST: '127.0.0.1' }).unexpandedError).toBeNull();
   });
 });
